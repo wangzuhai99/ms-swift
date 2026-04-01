@@ -122,6 +122,9 @@ class SwiftMixin:
             self.can_return_loss = can_return_loss(model)
         self.label_names = self.label_names or ['labels']
         self.start_time = time.time()
+        self._mfu_stats = None
+        self._mfu_last_log_time = None
+        self._init_mfu_stats()
         self._fix_gradient_checkpointing()
         self._patch_tasks()
         update_generation_config_eos_token(self.model.generation_config, self.template)
@@ -131,6 +134,28 @@ class SwiftMixin:
             # The weights have already been loaded outside the trainer,
             # so reading train_state is skipped here.
             self.args.resume_from_checkpoint = None
+
+    def _init_mfu_stats(self):
+        try:
+            config = getattr(self.model, 'config', None)
+            if config is None:
+                return
+            from swift.utils.mfu_stat import MFUStats
+            task_type = getattr(self.args, 'task_type', 'causal_lm') or 'causal_lm'
+            include_lm_head = task_type not in ('embedding', 'reranker', 'seq_cls')
+            is_causal = task_type in ('causal_lm', 'generative_reranker')
+            self._mfu_stats = MFUStats(
+                config=config,
+                logging_steps=self.args.logging_steps,
+                include_lm_head=include_lm_head,
+                is_causal=is_causal,
+            )
+            self._mfu_last_log_time = time.time()
+            logger.info(f'MFU statistics enabled (task_type={task_type}, '
+                        f'include_lm_head={include_lm_head}, is_causal={is_causal})')
+        except Exception as e:
+            logger.info(f'MFU statistics not available: {e}')
+            self._mfu_stats = None
 
     @property
     def tokenizer(self):
@@ -836,6 +861,17 @@ class SwiftMixin:
             self._total_loss_scalar += tr_loss_scalar
             self._globalstep_last_logged = self.state.global_step
             self.store_flos()
+
+            if self._mfu_stats is not None:
+                try:
+                    now = time.time()
+                    elapsed = now - self._mfu_last_log_time
+                    mfu_logs = self._mfu_stats.compute(elapsed, self.state.global_step)
+                    logs.update(mfu_logs)
+                    self._mfu_last_log_time = now
+                except Exception:
+                    pass
+
             self.log(logs)
 
         if self.args.eval_use_evalscope and self.control.should_evaluate:

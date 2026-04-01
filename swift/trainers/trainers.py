@@ -57,6 +57,11 @@ class Trainer(SwiftMixin, DataLoaderMixin, HfTrainer):
             return super().train(*args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if getattr(self, '_mfu_stats', None) is not None:
+            input_ids = inputs.get('input_ids')
+            if input_ids is not None:
+                self._mfu_stats.set(input_ids.numel(), input_ids.shape[0])
+
         loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
         if inputs.get('labels') is not None:
             self._compute_acc(outputs, inputs['labels'])
@@ -305,6 +310,11 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         return inputs
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if getattr(self, '_mfu_stats', None) is not None:
+            input_ids = inputs.get('input_ids')
+            if input_ids is not None:
+                self._mfu_stats.set(input_ids.numel(), input_ids.shape[0])
+
         labels = None
         compute_loss_func: Callable = inputs.pop('compute_loss_func', None)
         loss_scale = inputs.pop('loss_scale', None)
