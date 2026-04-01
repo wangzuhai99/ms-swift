@@ -143,14 +143,20 @@ class SwiftMixin:
             from swift.utils.mfu_stat import MFUStats
             task_type = getattr(self.args, 'task_type', 'causal_lm') or 'causal_lm'
             include_lm_head = task_type not in ('embedding', 'reranker', 'seq_cls')
-            is_causal = task_type in ('causal_lm', 'generative_reranker')
+            # Determine is_causal from model architecture, not task_type.
+            # Decoder-only models (e.g. Qwen3 Embedding) use causal attention
+            # even when task_type is 'embedding'.
+            archs = getattr(config, 'architectures', None) or []
+            is_causal = any('CausalLM' in a or 'GPT' in a for a in archs)
+            if not archs:
+                is_causal = task_type in ('causal_lm', 'generative_reranker')
             self._mfu_stats = MFUStats(
                 config=config,
                 logging_steps=self.args.logging_steps,
                 include_lm_head=include_lm_head,
                 is_causal=is_causal,
             )
-            self._mfu_last_log_time = time.time()
+            self._mfu_last_log_time = None  # lazy-init on first log to exclude setup time
             logger.info(f'MFU statistics enabled (task_type={task_type}, '
                         f'include_lm_head={include_lm_head}, is_causal={is_causal})')
         except Exception as e:
@@ -865,10 +871,15 @@ class SwiftMixin:
             if self._mfu_stats is not None:
                 try:
                     now = time.time()
-                    elapsed = now - self._mfu_last_log_time
-                    mfu_logs = self._mfu_stats.compute(elapsed, self.state.global_step)
-                    logs.update(mfu_logs)
-                    self._mfu_last_log_time = now
+                    if self._mfu_last_log_time is None:
+                        # First log: just record timestamp, skip computation
+                        # to exclude dataset preparation / model setup time.
+                        self._mfu_last_log_time = now
+                    else:
+                        elapsed = now - self._mfu_last_log_time
+                        mfu_logs = self._mfu_stats.compute(elapsed, self.state.global_step)
+                        logs.update(mfu_logs)
+                        self._mfu_last_log_time = now
                 except Exception:
                     pass
 

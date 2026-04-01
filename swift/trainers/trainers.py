@@ -60,7 +60,13 @@ class Trainer(SwiftMixin, DataLoaderMixin, HfTrainer):
         if getattr(self, '_mfu_stats', None) is not None:
             input_ids = inputs.get('input_ids')
             if input_ids is not None:
-                self._mfu_stats.set(input_ids.numel(), input_ids.shape[0])
+                num_tokens = input_ids.numel()
+                position_ids = inputs.get('position_ids')
+                if position_ids is not None and position_ids.numel() > 1:
+                    num_samples = (position_ids.flatten() == 0).sum().item()
+                else:
+                    num_samples = input_ids.shape[0]
+                self._mfu_stats.set(num_tokens, max(num_samples, 1))
 
         loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
         if inputs.get('labels') is not None:
@@ -313,7 +319,13 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         if getattr(self, '_mfu_stats', None) is not None:
             input_ids = inputs.get('input_ids')
             if input_ids is not None:
-                self._mfu_stats.set(input_ids.numel(), input_ids.shape[0])
+                num_tokens = input_ids.numel()
+                position_ids = inputs.get('position_ids')
+                if position_ids is not None and position_ids.numel() > 1:
+                    num_samples = (position_ids.flatten() == 0).sum().item()
+                else:
+                    num_samples = input_ids.shape[0]
+                self._mfu_stats.set(num_tokens, max(num_samples, 1))
 
         labels = None
         compute_loss_func: Callable = inputs.pop('compute_loss_func', None)
