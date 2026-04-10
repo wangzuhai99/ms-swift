@@ -129,6 +129,9 @@ class TrainArguments(SwanlabArguments, TunerArguments, BaseArguments, Seq2SeqTra
     # early_step
     early_stop_interval: Optional[int] = None
 
+    # profiler
+    profiler: bool = False
+
     def _check_padding_free(self):
         if self.padding_free or self.packing:
             if self.packing:

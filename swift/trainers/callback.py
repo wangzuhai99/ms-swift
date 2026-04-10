@@ -4,10 +4,10 @@ import os
 import time
 
 import torch
+from torch.profiler import ProfilerActivity, profile, schedule, tensorboard_trace_handler
 from tqdm import tqdm
-from transformers import trainer
-from transformers.trainer_callback import (DefaultFlowCallback, PrinterCallback, ProgressCallback, TrainerControl,
-                                           TrainerState)
+from transformers import TrainerCallback, trainer
+from transformers.trainer_callback import DefaultFlowCallback, PrinterCallback, ProgressCallback, TrainerControl, TrainerState
 from transformers.trainer_utils import IntervalStrategy, has_length
 from transformers.utils import is_torch_npu_available
 
@@ -109,6 +109,101 @@ class PrinterCallbackNew(PrinterCallback):
         _ = logs.pop('total_flos', None)
         if state.is_world_process_zero:
             print(logs, flush=True)
+
+
+class ProfilerCallback(TrainerCallback):
+    """使用 torch.profiler 分析训练性能的回调。
+
+    配合 TensorBoard 的 PyTorch Profiler 插件查看结果::
+
+        pip install torch-tb-profiler
+        tensorboard --logdir <output_dir>/profiler
+
+    profiler 使用 schedule 控制采集节奏：
+        wait   -> 不采集，正常训练（让 GPU 预热）
+        warmup -> 开始跟踪但丢弃结果（消除探针开销）
+        active -> 真正采集数据
+        repeat -> 以上周期重复次数（0 = 不限制）
+
+    ``with_stack=True`` 会记录 Python 调用栈，在 TensorBoard Trace View 中可看到
+    GPU 空闲等待期间 CPU 正在执行的代码位置（如 DataLoader、collate_fn 等），
+    但会带来额外开销，仅在性能分析时启用。
+
+    ``output_dir`` 自动从 ``args.output_dir`` 推导为 ``<output_dir>/profiler``，
+    无需手动指定。
+    """
+
+    def __init__(
+        self,
+        wait: int = 5,
+        warmup: int = 3,
+        active: int = 5,
+        repeat: int = 1,
+        record_shapes: bool = True,
+        profile_memory: bool = True,
+        with_stack: bool = True,
+        with_flops: bool = True,
+    ):
+        self.wait = wait
+        self.warmup = warmup
+        self.active = active
+        self.repeat = repeat
+        self.record_shapes = record_shapes
+        self.profile_memory = profile_memory
+        self.with_stack = with_stack
+        self.with_flops = with_flops
+        self.profiler = None
+        self._output_dir = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+
+        self._output_dir = os.path.join(args.output_dir, 'profiler')
+        os.makedirs(self._output_dir, exist_ok=True)
+
+        activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(ProfilerActivity.CUDA)
+        elif is_torch_npu_available():
+            try:
+                activities.append(ProfilerActivity.NPU)
+            except AttributeError:
+                pass
+
+        prof_schedule = schedule(
+            wait=self.wait,
+            warmup=self.warmup,
+            active=self.active,
+            repeat=self.repeat,
+        )
+
+        self.profiler = profile(
+            activities=activities,
+            schedule=prof_schedule,
+            on_trace_ready=tensorboard_trace_handler(self._output_dir),
+            record_shapes=self.record_shapes,
+            profile_memory=self.profile_memory,
+            with_stack=self.with_stack,
+            with_flops=self.with_flops,
+        )
+        self.profiler.__enter__()
+
+        total_steps = self.wait + self.warmup + self.active
+        logger.info(
+            f'[Profiler] started — schedule: wait={self.wait}, warmup={self.warmup}, '
+            f'active={self.active}, repeat={self.repeat} '
+            f'(first trace at step {total_steps}), output_dir={self._output_dir}')
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.profiler is not None:
+            self.profiler.step()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.profiler is not None:
+            self.profiler.__exit__(None, None, None)
+            logger.info(f'[Profiler] finished — traces saved to {self._output_dir}')
+            self.profiler = None
 
 
 # monkey patching

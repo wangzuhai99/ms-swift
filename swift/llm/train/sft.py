@@ -273,6 +273,12 @@ class SwiftSft(SwiftPipeline, TunerMixin):
                         'stopping training when the best metric showing no improvement within {} steps, '
                         'you can write a new implementation in the plugin/callback.py.')
 
+        if args.profiler:
+            from swift.trainers.callback import ProfilerCallback
+            self.callbacks.append(ProfilerCallback())
+            logger.info('Profiler callback enabled. View traces with: '
+                        'pip install torch-tb-profiler && tensorboard --logdir <output_dir>/profiler')
+
     @staticmethod
     def _stat_dataset(dataset: Union[HfDataset, PackingDataset]):
         if isinstance(dataset, HfDataset):
